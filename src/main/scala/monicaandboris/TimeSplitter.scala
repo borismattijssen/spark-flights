@@ -25,8 +25,8 @@ class TimeSplitter(override val uid: String) extends Transformer {
       throw new Exception(s"Input type ${field.dataType} did not match input type StringType")
     }
     // Add the return field
-    schema.add(StructField($(inputCol) + "_Hours", IntegerType, false))
-    schema.add(StructField($(inputCol) + "_Minutes", IntegerType, false))
+    schema.add($(inputCol) + "_Hours", IntegerType, false)
+          .add($(inputCol) + "_Minutes", IntegerType, false)
   }
 
   def transform(df: Dataset[_]): DataFrame = {
