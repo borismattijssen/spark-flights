@@ -1,2 +1,4 @@
 data/2007.csv filter=lfs diff=lfs merge=lfs -text
 data/2007_stripped.csv filter=lfs diff=lfs merge=lfs -text
+data/2006.csv filter=lfs diff=lfs merge=lfs -text
+data/2008.csv filter=lfs diff=lfs merge=lfs -text
