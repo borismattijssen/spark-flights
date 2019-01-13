@@ -3,8 +3,8 @@ package monicaandboris
 import org.apache.spark.ml.Pipeline
 import org.apache.spark.ml.evaluation.RegressionEvaluator
 import org.apache.spark.ml.feature._
-import org.apache.spark.ml.regression.{DecisionTreeRegressor, RandomForestRegressor}
-import org.apache.spark.sql.functions.{col, concat, lit, to_date, udf}
+import org.apache.spark.ml.regression.DecisionTreeRegressor
+import org.apache.spark.sql.functions.{udf,concat, col, lit, to_date}
 
 /**
  * @author ${user.name}
@@ -71,9 +71,20 @@ object TreeRegressor {
       new TimeSplitter().setInputCol(feature)
     }.toArray
 
-    val holidayDistance = new HolidayDistance()
-      .setInputCol("Date")
-      .setOutputCol("DistanceToHoliday")
+    val catAssembler = new VectorAssembler()
+      .setInputCols(Array(
+        "UniqueCarrier_Index",
+        "FlightNum_Index",
+        "TailNum_Index",
+        "Origin_Index",
+        "Dest_Index"
+      ))
+      .setOutputCol("cat_features_index")
+
+    val catIndexer = new VectorIndexer()
+      .setInputCol("cat_features_index")
+      .setOutputCol("cat_features_indexed")
+      .setMaxCategories(2)
 
     val assembler = new VectorAssembler()
       .setInputCols(Array(
@@ -91,30 +102,26 @@ object TreeRegressor {
         "DepDelay_Int",
         "Distance_Int",
         "TaxiOut_Int",
-        "DistanceToHoliday",
-        "UniqueCarrier_Index",
-        "FlightNum_Index",
-        "TailNum_Index",
-        "Origin_Index",
-        "Dest_Index"
+        "cat_features_indexed"
       ))
       .setOutputCol("features")
 
 
-    val pipeline = new Pipeline().setStages(timeFeatures ++ indexFeatures ++ Array(holidayDistance, assembler))
+    val pipeline = new Pipeline().setStages(timeFeatures ++ indexFeatures ++ Array(catAssembler, catIndexer, assembler))
 
     val indexer_model = pipeline.fit(strippedDf)
     val ds = indexer_model.transform(strippedDf).select("features", "ArrDelay_Int")
     val splits = ds.randomSplit(Array(0.7, 0.3))
 
-    val rf = new RandomForestRegressor()
-      .setNumTrees(10)
-      .setMaxDepth(20)
+    println("----------------------------Features----------------------------------")
+    println(ds.select("features").limit(1))
+
+    val dt = new DecisionTreeRegressor()
       .setMaxBins(7596)
       .setLabelCol("ArrDelay_Int")
       .setFeaturesCol("features")
 
-    val model = rf.fit(splits(0))
+    val model = dt.fit(splits(0))
     println("Feature importances")
     println(model.featureImportances)
 
@@ -135,3 +142,9 @@ object TreeRegressor {
   }
 
 }
+
+/*
++ Runtime: 32m
++ Best features:(19,[11,13],[0.9494711473372177,0.05052885266278233])
++ RMSE 12.425254291080435
+*/`
