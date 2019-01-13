@@ -5,11 +5,17 @@ import org.apache.spark.ml.evaluation.RegressionEvaluator
 import org.apache.spark.ml.feature._
 import org.apache.spark.ml.regression.DecisionTreeRegressor
 import org.apache.spark.sql.functions.{udf,concat, col, lit, to_date}
+import org.apache.spark.sql.functions._
 
 /**
  * @author ${user.name}
  */
 object TreeRegressor {
+
+  // def getNumberOfFlights(df: DataFrame): DataFrame = {
+  //  df.withColumn("nrOfFLightsFromOrigin", groupBy)
+  //}
+
 
   def main(args: Array[String]): Unit = {
     val spark = org.apache.spark.sql.SparkSession.builder
@@ -28,6 +34,9 @@ object TreeRegressor {
     val monthUDF = udf{m: Int => Math.sin(Math.PI * m / 6.0)}
     val dayOfMonthUDF = udf{d: Int => Math.sin(Math.PI * d / 15.25)}
     val dayOfWeekUDF = udf{d: Int => Math.sin(Math.PI * d / 3.5)}
+
+    import org.apache.spark.sql.expressions.Window
+    val nrOfFlightsFromOrigin = Window.partitionBy("Year", "Month", "DayOfMonth", "Origin") // <-- matches groupBy
 
     val strippedDf = df
       // drop forbidden columns
@@ -57,7 +66,7 @@ object TreeRegressor {
       .withColumn("TaxiOut_Int", 'TaxiOut cast "int")
       .withColumn("ArrDelay_Int", 'ArrDelay cast "int")
       .withColumn("Date", to_date(concat(col("Year"), lit("-"), col("Month"), lit("-"), col("DayofMonth"))))
-
+      .withColumn("NrOfFlights", count($"Origin") over nrOfFlightsFromOrigin)
 
     // index nominal features
     val indexFeatures = List("UniqueCarrier", "FlightNum", "TailNum", "Origin", "Dest").map{ feature =>
@@ -102,7 +111,8 @@ object TreeRegressor {
         "DepDelay_Int",
         "Distance_Int",
         "TaxiOut_Int",
-        "cat_features_indexed"
+        "cat_features_indexed",
+        "NrOfFlights"
       ))
       .setOutputCol("features")
 
