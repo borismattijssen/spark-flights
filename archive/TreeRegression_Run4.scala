@@ -3,8 +3,8 @@ package monicaandboris
 import org.apache.spark.ml.Pipeline
 import org.apache.spark.ml.evaluation.RegressionEvaluator
 import org.apache.spark.ml.feature._
-import org.apache.spark.ml.regression.{DecisionTreeRegressor, RandomForestRegressor}
-import org.apache.spark.sql.functions.{col, concat, lit, to_date, udf}
+import org.apache.spark.ml.regression.DecisionTreeRegressor
+import org.apache.spark.sql.functions.{udf,concat, col, lit, to_date}
 
 /**
  * @author ${user.name}
@@ -91,12 +91,7 @@ object TreeRegressor {
         "DepDelay_Int",
         "Distance_Int",
         "TaxiOut_Int",
-        "DistanceToHoliday",
-        "UniqueCarrier_Index",
-        "FlightNum_Index",
-        "TailNum_Index",
-        "Origin_Index",
-        "Dest_Index"
+        "DistanceToHoliday"
       ))
       .setOutputCol("features")
 
@@ -107,14 +102,14 @@ object TreeRegressor {
     val ds = indexer_model.transform(strippedDf).select("features", "ArrDelay_Int")
     val splits = ds.randomSplit(Array(0.7, 0.3))
 
-    val rf = new RandomForestRegressor()
-      .setNumTrees(10)
-      .setMaxDepth(20)
-      .setMaxBins(7596)
+    println("----------------------------Features----------------------------------")
+    println(ds.select("features").limit(1))
+
+    val dt = new DecisionTreeRegressor()
       .setLabelCol("ArrDelay_Int")
       .setFeaturesCol("features")
 
-    val model = rf.fit(splits(0))
+    val model = dt.fit(splits(0))
     println("Feature importances")
     println(model.featureImportances)
 
@@ -135,3 +130,9 @@ object TreeRegressor {
   }
 
 }
+
+/*
++ Runtime: 36m
++ Best features: (15,[4,6,8,10,11,13],[0.007468842971771095,0.003945368553443435,0.013508565382716884,1.3114361881585055E-4,0.9252595003296823,0.04968657914357055])
++ RMSE 18.219266265267393
+*/
