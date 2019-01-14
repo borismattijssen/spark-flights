@@ -1,19 +1,15 @@
 package monicaandboris
 
-import java.io.{FileOutputStream, ObjectOutputStream}
-
 import org.apache.spark.ml.Pipeline
 import org.apache.spark.ml.evaluation.RegressionEvaluator
 import org.apache.spark.ml.feature._
-import org.apache.spark.ml.regression.{DecisionTreeRegressor, GBTRegressor}
-import org.apache.spark.sql.functions.{col, concat, lit, to_date, udf}
-import org.apache.spark.sql.functions._
+import org.apache.spark.ml.regression.DecisionTreeRegressor
+import org.apache.spark.sql.functions.{udf, concat, col, lit, to_date}
 
 /**
- * @author ${user.name}
- */
+  * @author ${user.name}
+  */
 object TreeRegressor {
-
 
   def main(args: Array[String]): Unit = {
     val spark = org.apache.spark.sql.SparkSession.builder
@@ -29,12 +25,9 @@ object TreeRegressor {
       .option("mode", "DROPMALFORMED")
       .load(args(0))
 
-    val monthUDF = udf{m: Int => Math.sin(Math.PI * m / 6.0)}
-    val dayOfMonthUDF = udf{d: Int => Math.sin(Math.PI * d / 15.25)}
-    val dayOfWeekUDF = udf{d: Int => Math.sin(Math.PI * d / 3.5)}
-
-    import org.apache.spark.sql.expressions.Window
-    val nrOfFlightsFromOrigin = Window.partitionBy("Year", "Month", "DayOfMonth", "Origin") // <-- matches groupBy
+    val monthUDF = udf { m: Int => Math.sin(Math.PI * m / 6.0) }
+    val dayOfMonthUDF = udf { d: Int => Math.sin(Math.PI * d / 15.25) }
+    val dayOfWeekUDF = udf { d: Int => Math.sin(Math.PI * d / 3.5) }
 
     val strippedDf = df
       // drop forbidden columns
@@ -64,23 +57,34 @@ object TreeRegressor {
       .withColumn("TaxiOut_Int", 'TaxiOut cast "int")
       .withColumn("ArrDelay_Int", 'ArrDelay cast "int")
       .withColumn("Date", to_date(concat(col("Year"), lit("-"), col("Month"), lit("-"), col("DayofMonth"))))
-      .withColumn("NrOfFlights", count($"Origin") over nrOfFlightsFromOrigin)
+
 
     // index nominal features
-    val indexFeatures = List("UniqueCarrier", "FlightNum", "TailNum", "Origin", "Dest").map{ feature =>
+    val indexFeatures = List("UniqueCarrier", "FlightNum", "TailNum", "Origin", "Dest").map { feature =>
       new StringIndexer()
-      .setInputCol(feature)
-      .setOutputCol(feature + "_Index")
+        .setInputCol(feature)
+        .setOutputCol(feature + "_Index")
     }.toArray
 
     // split features with the hhmm format into two columns
-    val timeFeatures = List("DepTime", "CRSDepTime", "CRSArrTime").map{ feature =>
+    val timeFeatures = List("DepTime", "CRSDepTime", "CRSArrTime").map { feature =>
       new TimeSplitter().setInputCol(feature)
     }.toArray
 
-    val holidayDistance = new HolidayDistance()
-      .setInputCol("Date")
-      .setOutputCol("DistanceToHoliday")
+    val catAssembler = new VectorAssembler()
+      .setInputCols(Array(
+        "UniqueCarrier_Index",
+        "FlightNum_Index",
+        "TailNum_Index",
+        "Origin_Index",
+        "Dest_Index"
+      ))
+      .setOutputCol("cat_features_index")
+
+    val catIndexer = new VectorIndexer()
+      .setInputCol("cat_features_index")
+      .setOutputCol("cat_features_indexed")
+      .setMaxCategories(2)
 
     val assembler = new VectorAssembler()
       .setInputCols(Array(
@@ -98,29 +102,26 @@ object TreeRegressor {
         "DepDelay_Int",
         "Distance_Int",
         "TaxiOut_Int",
-        "DistanceToHoliday",
-        "UniqueCarrier_Index",
-        "FlightNum_Index",
-        "TailNum_Index",
-        "Origin_Index",
-        "Dest_Index"
+        "cat_features_indexed"
       ))
       .setOutputCol("features")
 
 
-    val pipeline = new Pipeline().setStages(timeFeatures ++ indexFeatures ++ Array(holidayDistance, assembler))
+    val pipeline = new Pipeline().setStages(timeFeatures ++ indexFeatures ++ Array(catAssembler, catIndexer, assembler))
 
     val indexer_model = pipeline.fit(strippedDf)
     val ds = indexer_model.transform(strippedDf).select("features", "ArrDelay_Int")
     val splits = ds.randomSplit(Array(0.7, 0.3))
 
-    val rf = new GBTRegressor()
-      .setMaxDepth(50)
+    println("----------------------------Features----------------------------------")
+    println(ds.select("features").limit(1))
+
+    val dt = new DecisionTreeRegressor()
       .setMaxBins(7596)
       .setLabelCol("ArrDelay_Int")
       .setFeaturesCol("features")
 
-    val model = rf.fit(splits(0))
+    val model = dt.fit(splits(0))
     println("Feature importances")
     println(model.featureImportances)
 
@@ -138,11 +139,12 @@ object TreeRegressor {
     val rmse = evaluator.evaluate(predictions)
     println("Root Mean Squared Error (RMSE) on test data = " + rmse)
 
-    // Write results to disk for later analysis
-    val oos = new ObjectOutputStream(new FileOutputStream(args(1)))
-    oos.writeObject(model)
-    oos.close
-
   }
 
 }
+
+/*
++ Runtime: 32m
++ Best features:(19,[11,13],[0.9494711473372177,0.05052885266278233])
++ RMSE 12.425254291080435
+*/ `

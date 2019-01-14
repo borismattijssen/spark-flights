@@ -6,14 +6,11 @@ import org.apache.spark.ml.Pipeline
 import org.apache.spark.ml.evaluation.RegressionEvaluator
 import org.apache.spark.ml.feature._
 import org.apache.spark.ml.regression.{DecisionTreeRegressor, GBTRegressor}
+import org.apache.spark.ml.tuning.{CrossValidator, ParamGridBuilder}
 import org.apache.spark.sql.functions.{col, concat, lit, to_date, udf}
 import org.apache.spark.sql.functions._
 
-/**
- * @author ${user.name}
- */
-object TreeRegressor {
-
+object GBT {
 
   def main(args: Array[String]): Unit = {
     val spark = org.apache.spark.sql.SparkSession.builder
@@ -29,9 +26,9 @@ object TreeRegressor {
       .option("mode", "DROPMALFORMED")
       .load(args(0))
 
-    val monthUDF = udf{m: Int => Math.sin(Math.PI * m / 6.0)}
-    val dayOfMonthUDF = udf{d: Int => Math.sin(Math.PI * d / 15.25)}
-    val dayOfWeekUDF = udf{d: Int => Math.sin(Math.PI * d / 3.5)}
+    val monthUDF = udf { m: Int => Math.sin(Math.PI * m / 6.0) }
+    val dayOfMonthUDF = udf { d: Int => Math.sin(Math.PI * d / 15.25) }
+    val dayOfWeekUDF = udf { d: Int => Math.sin(Math.PI * d / 3.5) }
 
     import org.apache.spark.sql.expressions.Window
     val nrOfFlightsFromOrigin = Window.partitionBy("Year", "Month", "DayOfMonth", "Origin") // <-- matches groupBy
@@ -67,14 +64,15 @@ object TreeRegressor {
       .withColumn("NrOfFlights", count($"Origin") over nrOfFlightsFromOrigin)
 
     // index nominal features
-    val indexFeatures = List("UniqueCarrier", "FlightNum", "TailNum", "Origin", "Dest").map{ feature =>
+    val indexFeatures = List("UniqueCarrier", "FlightNum", "TailNum", "Origin", "Dest").map { feature =>
       new StringIndexer()
-      .setInputCol(feature)
-      .setOutputCol(feature + "_Index")
+        .setInputCol(feature)
+        .setOutputCol(feature + "_Index")
+        .setHandleInvalid("keep")
     }.toArray
 
     // split features with the hhmm format into two columns
-    val timeFeatures = List("DepTime", "CRSDepTime", "CRSArrTime").map{ feature =>
+    val timeFeatures = List("DepTime", "CRSDepTime", "CRSArrTime").map { feature =>
       new TimeSplitter().setInputCol(feature)
     }.toArray
 
@@ -103,38 +101,38 @@ object TreeRegressor {
         "FlightNum_Index",
         "TailNum_Index",
         "Origin_Index",
-        "Dest_Index"
+        "Dest_Index",
+        "NrOfFlights"
       ))
       .setOutputCol("features")
 
-
-    val pipeline = new Pipeline().setStages(timeFeatures ++ indexFeatures ++ Array(holidayDistance, assembler))
-
-    val indexer_model = pipeline.fit(strippedDf)
-    val ds = indexer_model.transform(strippedDf).select("features", "ArrDelay_Int")
-    val splits = ds.randomSplit(Array(0.7, 0.3))
-
-    val rf = new GBTRegressor()
-      .setMaxDepth(50)
-      .setMaxBins(7596)
+    val gbt = new GBTRegressor()
+      .setMaxIter(10)
       .setLabelCol("ArrDelay_Int")
       .setFeaturesCol("features")
+      .setMaxBins(7596)
 
-    val model = rf.fit(splits(0))
-    println("Feature importances")
-    println(model.featureImportances)
 
-    // Make predictions.
-    val predictions = model.transform(splits(1))
+    val pipeline = new Pipeline().setStages(timeFeatures ++ indexFeatures ++ Array(holidayDistance, assembler, gbt))
 
-    // Select example rows to display.
-    predictions.select("prediction", "ArrDelay_Int", "features").show(5)
+    val Array(training, testing) = strippedDf.randomSplit(Array(0.7, 0.3))
 
-    // Select (prediction, true label) and compute test error.
     val evaluator = new RegressionEvaluator()
       .setLabelCol("ArrDelay_Int")
       .setPredictionCol("prediction")
       .setMetricName("rmse")
+
+
+    val model = pipeline.fit(training)
+
+    // Make predictions.
+    val predictions = model.transform(testing)
+
+    // Select example rows to display.
+    predictions.select("prediction", "ArrDelay_Int", "features").show(20)
+
+    // Select (prediction, true label) and compute test error.
+
     val rmse = evaluator.evaluate(predictions)
     println("Root Mean Squared Error (RMSE) on test data = " + rmse)
 
@@ -144,5 +142,6 @@ object TreeRegressor {
     oos.close
 
   }
+
 
 }
