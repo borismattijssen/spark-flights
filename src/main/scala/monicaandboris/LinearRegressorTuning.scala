@@ -1,6 +1,6 @@
 package monicaandboris
 
-object GBT {
+object LinearRegressorTuning {
 
   def main(args: Array[String]): Unit = {
     val spark = org.apache.spark.sql.SparkSession.builder
@@ -19,9 +19,11 @@ object GBT {
     val monthUDF = udf { m: Int => Math.sin(Math.PI * m / 6.0) }
     val dayOfMonthUDF = udf { d: Int => Math.sin(Math.PI * d / 15.25) }
     val dayOfWeekUDF = udf { d: Int => Math.sin(Math.PI * d / 3.5) }
-    val nrOfArrivals = Window.partitionBy("Year", "Month", "DayOfMonth", "Dest")
 
+    val nrOfArrivals = Window.partitionBy("Year", "Month", "DayOfMonth", "Dest")
     val nrOfDepartures = Window.partitionBy("Year", "Month", "DayOfMonth", "Origin")
+    val cancellationsByCode = Window.partitionBy("Year", "Month", "DayOfMonth", "Origin", "CancellationCode")
+
 
     val strippedDf = df
       // drop forbidden columns
@@ -52,13 +54,14 @@ object GBT {
       .withColumn("ArrDelay_Int", 'ArrDelay cast "int")
       .withColumn("Date", to_date(concat(col("Year"), lit("-"), col("Month"), lit("-"), col("DayofMonth"))))
       .withColumn("NrOfDepartures", count($"Origin") over nrOfDepartures)
-      .withColumn("NrOfArrivals", count($"Origin") over nrOfArrivals)
-
-    strippedDf.show()
-    strippedDf.describe().show()
-
+      .withColumn("NrOfArrivals", count($"Dest") over nrOfArrivals)
+      .withColumn("NrOfCancelledNAS", count($"CancellationCode" === 'C') over cancellationsByCode)
+      .withColumn("NrOfCancelledSecurity", count($"CancellationCode" === 'D') over cancellationsByCode)
+      .withColumn("NrOfCancelledCarrier", count($"CancellationCode" === 'A') over cancellationsByCode)
+      .withColumn("NrOfCancelledWeather", count($"CancellationCode" === 'B') over cancellationsByCode)
 
     // index nominal features
+
     val indexFeatures = List("UniqueCarrier", "FlightNum", "TailNum", "Origin", "Dest").map { feature =>
       new StringIndexer()
         .setInputCol(feature)
@@ -77,43 +80,45 @@ object GBT {
 
     val assembler = new VectorAssembler()
       .setInputCols(Array(
-        //"Year_Int",
+        "Year_Int",
         "Month_Int",
         "DayofMonth_Int",
         "DayOfWeek_Int",
         "DepTime_Hours",
-        //"DepTime_Minutes",
-        //"CRSDepTime_Hours",
-        //"CRSDepTime_Minutes",
-        //"CRSArrTime_Hours",
-        //"CRSArrTime_Minutes",
+        "DepTime_Minutes",
+        "CRSDepTime_Hours",
+        "CRSDepTime_Minutes",
+        "CRSArrTime_Hours",
+        "CRSArrTime_Minutes",
         "CRSElapsedTime_Int",
         "DepDelay_Int",
-        //"Distance_Int",
         "TaxiOut_Int",
         "DistanceToHoliday",
-        //"UniqueCarrier_Index",
+        "UniqueCarrier_Index",
         //"FlightNum_Index",
         //"TailNum_Index",
-        //"Origin_Index",
-        //"Dest_Index",
+        "Origin_Index",
+        "Dest_Index",
         "NrOfArrivals",
-        "NrOfDepartures"
-
+        "NrOfDepartures",
+        "NrOfCancelledNAS",
+        "NrOfCancelledSecurity",
+        "NrOfCancelledCarrier",
+        "NrOfCancelledWeather"
       ))
       .setOutputCol("features")
 
-    val gbt = new GBTRegressor()
+    val lr = new LinearRegression()
       .setLabelCol("ArrDelay_Int")
       .setFeaturesCol("features")
 
     val paramGrid = new ParamGridBuilder()
-      .addGrid(gbt.stepSize, Array(0.1, 0.01))
-      .addGrid(gbt.maxDepth, Array(5, 7))
+      .addGrid(lr.regParam, Array(0.1, 0.01))
+      .addGrid(lr.fitIntercept)
+      .addGrid(lr.elasticNetParam, Array(0.0, 1.0))
       .build()
 
-
-    val pipeline = new Pipeline().setStages(timeFeatures ++ indexFeatures ++ Array(holidayDistance, assembler, gbt))
+    val pipeline = new Pipeline().setStages(timeFeatures ++ indexFeatures ++ Array(holidayDistance, assembler, lr))
 
     val Array(training, testing) = strippedDf.randomSplit(Array(0.7, 0.3), seed = 42)
 
@@ -123,7 +128,7 @@ object GBT {
       .setMetricName("rmse")
 
     val tvs = new TrainValidationSplit()
-      .setEstimator(pipeline) // the estimator can also just be an individual model rather than a pipeline
+      .setEstimator(pipeline)
       .setEvaluator(evaluator)
       .setEstimatorParamMaps(paramGrid)
       .setTrainRatio(0.75)
@@ -144,36 +149,36 @@ object GBT {
     val rmse = evaluator.evaluate(predictions)
     println("Root Mean Squared Error (RMSE) on test data = " + rmse)
 
-    // Write predictions to csv for further analysis
-
-
-    //    val oos = new ObjectOutputStream(new FileOutputStream(args(1)))
-    val bestModel = model.bestModel.asInstanceOf[PipelineModel].stages.last.asInstanceOf[GBTRegressionModel]
-    println("Best Model")
-    println("Feature importances")
-    println(bestModel.featureImportances)
-    if (bestModel.totalNumNodes < 30) {
-      println(bestModel.toDebugString) // Print full model.
-
-    } else {
-      println(bestModel) // Print model summary.
-
+    val pipelineModel: Option[PipelineModel] = model.bestModel match {
+      case p: PipelineModel => Some(p)
+      case _ => None
     }
-
     val rm = new RegressionMetrics(holdout.rdd.map(x =>
       (x(0).asInstanceOf[Double], x(1).asInstanceOf[Int])))
     println("sqrt(MSE): " + Math.sqrt(rm.meanSquaredError))
     println("R Squared: " + rm.r2)
     println("Explained Variance: " + rm.explainedVariance + "\n")
 
-
-    // Write results to disk for later analysis
-
-
-    //    oos.writeChars("RMSE: "+ rmse.toString )
-    //    oos.close
+    val lrModel = pipelineModel.flatMap {
+      _.stages.collect { case t: LinearRegressionModel => t }.headOption
+    }
+    lrModel match {
+      case Some(v) => printSummary(v)
+      case None => None
+    }
 
   }
 
+  def printSummary(lrModel: LinearRegressionModel): Unit = {
+    println(s"Coefficients: ${lrModel.coefficients}")
+    println(s"Intercept: ${lrModel.intercept}")
+    val trainingSummary = lrModel.summary
+    println(s"numIterations: ${trainingSummary.totalIterations}")
+    println(s"objectiveHistory: ${trainingSummary.objectiveHistory.toList}")
+    trainingSummary.residuals.show()
+    println(s"RMSE: ${trainingSummary.rootMeanSquaredError}")
+    println(s"r2: ${trainingSummary.r2}")
+
+  }
 
 }
